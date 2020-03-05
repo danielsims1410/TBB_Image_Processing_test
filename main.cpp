@@ -2,6 +2,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <chrono>
 //Thread building blocks libraries
 #include <tbb/task_scheduler_init.h>
 #include "tbb/blocked_range2d.h"
@@ -109,6 +110,7 @@ fipImage CompareAndChangeImages(const fipImage& image1, const fipImage& image2) 
     int colour_value;
 
     cout << "Finding Identical Pixels..." << endl;
+    auto t0 = chrono::high_resolution_clock::now();
     for (int i = 0; i < height; i++) {
         for (int j = 0; j < width; j++) {
             image1.getPixelColor(j, i, &rgb);
@@ -368,5 +370,6 @@ void InvertPixelsAtWhitePixels(fipImage& image_to_invert, fipImage& filter_mask_
     }
     cout << "Saving stage3_invert.png..." << endl;
     image_to_invert.save("../Images/stage3_invert.png");
+    //
 }
 
