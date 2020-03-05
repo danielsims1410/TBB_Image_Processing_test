@@ -5,7 +5,8 @@
 #include <chrono>
 //Thread building blocks libraries
 #include <tbb/task_scheduler_init.h>
-#include "tbb/blocked_range2d.h"
+#include <tbb/blocked_range2d.h>
+#include <tbb/parallel_for.h>
 //Free Image library
 #include <FreeImagePlus.h>
 
@@ -124,7 +125,9 @@ fipImage CompareAndChangeImages(const fipImage& image1, const fipImage& image2) 
             result_image.setPixelColor(j, i, &new_rgb_values[i][j]);
         }
     }
-    cout << "Identical Pixels Found..." << endl;
+    auto t1 = chrono::high_resolution_clock::now();
+    auto time_lapsed = chrono::duration_cast<chrono::milliseconds>(t1-t0);
+    cout << "Identical Pixels Found in " << time_lapsed.count()  << "ms..." << endl;
     result_image.convertToType(FREE_IMAGE_TYPE::FIT_BITMAP);
     result_image.convertTo24Bits();
     return result_image;
@@ -154,6 +157,7 @@ void MergeImages(const fipImage& image1, const fipImage& image2) {
     new_rgb_values.resize(height, vector<RGBQUAD>(width));
 
     cout << "Bottom half of stage1_bottom.png being copied..." << endl;
+    auto t0 = chrono::high_resolution_clock::now();
     for(unsigned int i = 0; i < height/2; i++) {
         for(int j = 0; j < width; j++) {
             image2.getPixelColor(j, i, &rgb_value);
@@ -164,7 +168,11 @@ void MergeImages(const fipImage& image1, const fipImage& image2) {
         }
     }
 
+    //Ended here and restarted later to stop cout affecting the result
+    auto t1 = chrono::high_resolution_clock::now();
+
     cout << "Top Half of stage1_top.png being copied..." << endl;
+    auto t2 = chrono::high_resolution_clock::now();
     for(unsigned int i = height/2; i < height; i++) {
         for(int j = 0; j < width; j++) {
             image1.getPixelColor(j, i, &rgb_value);
@@ -174,7 +182,11 @@ void MergeImages(const fipImage& image1, const fipImage& image2) {
             result_image.setPixelColor(j, i, &new_rgb_values[i][j]);
         }
     }
-    cout << "Images Merged!" << endl;
+    auto t3 = chrono::high_resolution_clock::now();
+    auto time_lapsed_0 = chrono::duration_cast<chrono::milliseconds>(t1-t0);
+    auto time_lapsed_1 = chrono::duration_cast<chrono::milliseconds>(t3-t2);
+    auto time_lapsed = time_lapsed_1.count() + time_lapsed_0.count();
+    cout << "Images Merged in " << time_lapsed << "ms!" << endl;
     result_image.convertToType(FREE_IMAGE_TYPE::FIT_BITMAP);
     result_image.convertTo24Bits();
     cout << "Saving stage1_combined.png..." << endl << endl;
@@ -188,22 +200,24 @@ void ApplyGaussianBlur(fipImage image_to_blur, int kernel_size) {
     unsigned int width = image_to_blur.getWidth();
     const float* input_buffer = (float*)image_to_blur.accessPixels();
 
+    float sigma;
+    cout << "Enter a value for Sigma: ";
+    cin >> sigma;
+
     fipImage blurred_image = fipImage(FIT_FLOAT, width, height, 32);
     auto *blurred_image_buffer = (float*)blurred_image.accessPixels();
 
-
-    auto blur = [&](const blocked_range2d<int, int>& r) {
-        auto y_begin = r.rows().begin();
-        auto y_end = r.rows().end();
-        auto x_begin = r.cols().begin();
-        auto x_end = r.cols().end();
+    //Sequential
+    cout << "Sequential Version:" << endl;
+    auto blur = [&](const blocked_range2d<int, int>& container) {
+        auto y_begin = container.rows().begin();
+        auto y_end = container.rows().end();
+        auto x_begin = container.cols().begin();
+        auto x_end = container.cols().end();
 
         int starting_x;
         int starting_y;
-        float sigma;
-        cout << "Enter a value for Sigma: ";
-        cin >> sigma;
-        cout << "Applying Gaussian Blur with Stencil Pattern at these coordinates..." << endl;
+        cout << "Applying Gaussian Blur with Stencil Pattern..." << endl;
         for(int y = y_begin; y < y_end; ++y) {
             for (int x = x_begin; x < x_end; ++x) {
                 float new_pixel_value = 0.0f;
@@ -230,8 +244,56 @@ void ApplyGaussianBlur(fipImage image_to_blur, int kernel_size) {
         }
     };
 
+    auto t0 = chrono::high_resolution_clock::now();
     blur(blocked_range2d<int, int>(0, height, 0, width));
-    cout << "Gaussian Blur Applied!" << endl;
+    auto t1 = chrono::high_resolution_clock::now();
+    auto time_lapsed_seq = chrono::duration_cast<chrono::milliseconds>(t1-t0);
+    cout << "Gaussian Blur Applied in " << time_lapsed_seq.count() << "ms!" << endl;
+    cout << "Kernel_Size: " << kernel_size << endl;
+    cout << "Sigma: " << sigma << endl << endl;
+
+    //Parallel Version
+    cout << "Parallel Version:" << endl;
+    cout << "Applying Gaussian Blur with Stencil Pattern..." << endl;
+    auto t2 = chrono::high_resolution_clock::now();
+    parallel_for(blocked_range2d<int, int>(0, height, 8, 0, width, width >> 2), [&](const blocked_range2d<int, int>& container) {
+        auto y_begin = container.rows().begin();
+        auto y_end = container.rows().end();
+        auto x_begin = container.cols().begin();
+        auto x_end = container.cols().end();
+
+        int starting_x;
+        int starting_y;
+        for(int y = y_begin; y < y_end; ++y) {
+            for (int x = x_begin; x < x_end; ++x) {
+                float new_pixel_value = 0.0f;
+
+                if (x <= kernel_size) starting_x = 0;
+                else starting_x = kernel_size;
+
+                if (y <= kernel_size) starting_y = 0;
+                else starting_y = kernel_size;
+
+                for (int x2 = x - starting_x; x2 <= (x + kernel_size); x2++) {
+                    for (int y2 = y - starting_y; y2 <= (y + kernel_size); y2++) {
+                        //cout << endl << "newY: " << y2 << " | newX: " << x2
+                        //<< "| x: " << x << " | y: " << y;
+                        if ((y2 > 0 && y2 < height) && (x2 > 0 && x2 < width)) {
+                            new_pixel_value += (Gaussian2D(x, y, x2, y2, sigma) * input_buffer[y2 * width + x2]);
+                        } else {
+                            new_pixel_value += (Gaussian2D(x, y, x, y, sigma) * input_buffer[y * width + x]);
+                        }
+                    }
+                }
+                blurred_image_buffer[y * width + x] = new_pixel_value;
+            }
+        }
+    });
+    auto t3 = chrono::high_resolution_clock::now();
+    auto time_lapsed_par = chrono::duration_cast<chrono::milliseconds>(t3-t2);
+    cout << "Gaussian Blur Applied in " << time_lapsed_par.count() << "ms!" << endl;
+    cout << "Kernel_Size: " << kernel_size << endl;
+    cout << "Sigma: " << sigma << endl << endl;
 
     blurred_image.convertToType(FREE_IMAGE_TYPE::FIT_BITMAP);
     blurred_image.convertTo32Bits();
@@ -260,8 +322,15 @@ void ThresholdOperation(const fipImage& operating_image) {
     int threshold;
     cout << "Enter a Threshold: ";
     cin >> threshold;
+    while(threshold < 1 || threshold > 765) {
+        if(threshold < 1) { cout << "Threshold Must Be Higher than 1!" << endl; }
+        else { cout << "Threshold Must Be 765 or Lower!" << endl; }
+        cout << "Please Re-Enter: ";
+        cin >> threshold;
+    }
 
     cout << "Applying Threshold..." << endl;
+    auto t0 = chrono::high_resolution_clock::now();
     for(int i = 0; i < height; i++) {
         for(int j = 0; j < width; j++) {
             operating_image.getPixelColor(j, i, &rgb_value);
@@ -281,7 +350,9 @@ void ThresholdOperation(const fipImage& operating_image) {
             result_image.setPixelColor(j, i, &new_rgb_values[i][j]);
         }
     }
-    cout << "Threshold Applied!" << endl;
+    auto t1 = chrono::high_resolution_clock::now();
+    auto time_lapsed = chrono::duration_cast<chrono::milliseconds>(t1-t0);
+    cout << "Threshold Applied in " << time_lapsed.count() << "ms!" << endl;
     result_image.convertToType(FREE_IMAGE_TYPE::FIT_BITMAP);
     result_image.convertTo24Bits();
     cout << "Saving stage2_threshold.png..." << endl << endl;
@@ -308,6 +379,7 @@ void CountWhitePixels(const fipImage& image) {
     RGBQUAD rgb_value;
     cout << "Counting White Pixels..." << endl;
     int white_pixel_count = 0;
+    auto t0 = chrono::high_resolution_clock::now();
     for(int i = 0; i < height; i++) {
         for(int j = 0; j < width; j++) {
             image.getPixelColor(j, i, &rgb_value);
@@ -315,8 +387,11 @@ void CountWhitePixels(const fipImage& image) {
         }
     }
     float white_pixel_percentage = (white_pixel_count / total_pixels) * 100.0f;
+    auto t1 = chrono::high_resolution_clock::now();
+    auto time_lapsed = chrono::duration_cast<chrono::milliseconds>(t1-t0);
     cout << "Number of White Pixels: " << white_pixel_count << endl;
-    cout << "Percentage: " << white_pixel_percentage << "% of Pixels" << endl << endl;
+    cout << "Percentage: " << white_pixel_percentage << "% of Pixels" << endl;
+    cout << "Counted and Calculated in " << time_lapsed.count() << "ms! " << endl << endl;
 }
 
 //P2 & P3
@@ -347,6 +422,7 @@ void InvertPixelsAtWhitePixels(fipImage& image_to_invert, fipImage& filter_mask_
     vector<int> white_y_coordinates;
     RGBQUAD rgb_value;
     cout << "Searching for & Storing White Pixel Coordinates in stage2_threshold.png..." << endl;
+    auto t0 = chrono::high_resolution_clock::now();
     for(int i = 0; i < height; i++) {
         for(int j = 0; j < width; j++) {
             filter_mask_image.getPixelColor(j, i, &rgb_value);
@@ -357,10 +433,13 @@ void InvertPixelsAtWhitePixels(fipImage& image_to_invert, fipImage& filter_mask_
             }
         }
     }
+    auto t1 = chrono::high_resolution_clock::now();
+    auto time_lapsed_0 = chrono::duration_cast<chrono::milliseconds>(t1-t0);
 
     cout << "Inverting Pixels in render_top1.png at these coordinates..." << endl;
     RGBQUAD rgb_value_invert;
     int vector_size = white_x_coordinates.size();
+    auto t2 = chrono::high_resolution_clock::now();
     for(int i = 0; i < vector_size; i++) {
         image_to_invert.getPixelColor(white_x_coordinates.at(i), white_y_coordinates.at(i), &rgb_value_invert);
         rgb_value_invert.rgbRed = 255 - rgb_value_invert.rgbRed;
@@ -368,6 +447,10 @@ void InvertPixelsAtWhitePixels(fipImage& image_to_invert, fipImage& filter_mask_
         rgb_value_invert.rgbBlue = 255 - rgb_value_invert.rgbBlue;
         image_to_invert.setPixelColor(white_x_coordinates.at(i), white_y_coordinates.at(i), &rgb_value_invert);
     }
+    auto t3 = chrono::high_resolution_clock::now();
+    auto time_lapsed_1 = chrono::duration_cast<chrono::milliseconds>(t3-t2);
+    auto time_lapsed = time_lapsed_0 + time_lapsed_1;
+    cout << "Image Inverted in " << time_lapsed.count() << "ms!" << endl;
     cout << "Saving stage3_invert.png..." << endl;
     image_to_invert.save("../Images/stage3_invert.png");
     //
